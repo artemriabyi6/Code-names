@@ -1,7 +1,8 @@
 
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import { words } from "@/data/words";
 import type { CardRole, GameCard, GameState, Team } from "@/types/game";
 import styles from "./GameBoard.module.scss";
@@ -57,36 +58,37 @@ function getOtherTeam(team: Team): Team {
   return team === "blue" ? "red" : "blue";
 }
 
-function playBeep(frequency = 800, duration = 150) {
+function playBeep(
+  context: AudioContext,
+  frequency = 800,
+  duration = 150
+) {
   try {
-    const audioContext = new window.AudioContext();
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
 
     oscillator.type = "sine";
     oscillator.frequency.value = frequency;
 
-    gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-    gain.gain.exponentialRampToValueAtTime(
-      0.15,
-      audioContext.currentTime + 0.02
-    );
+    const now = context.currentTime;
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.15, now + 0.02);
     gain.gain.exponentialRampToValueAtTime(
       0.0001,
-      audioContext.currentTime + duration / 1000
+      now + duration / 1000
     );
 
     oscillator.connect(gain);
-    gain.connect(audioContext.destination);
+    gain.connect(context.destination);
 
-    oscillator.start();
-    oscillator.stop(audioContext.currentTime + duration / 1000);
+    oscillator.start(now);
+    oscillator.stop(now + duration / 1000);
 
     oscillator.onended = () => {
-      void audioContext.close();
+      oscillator.disconnect();
+      gain.disconnect();
     };
-
-    void audioContext.resume();
   } catch {
     // Гра продовжує працювати, навіть якщо звук недоступний.
   }
@@ -104,11 +106,14 @@ function formatTime(seconds: number) {
 export default function GameBoard() {
   const [game, setGame] = useState<GameState>(() => createGame());
   const [showKey, setShowKey] = useState(false);
+  const [keyLocked, setKeyLocked] = useState(false);
 
   const [timerDuration, setTimerDuration] = useState(DEFAULT_TIMER);
   const [timeLeft, setTimeLeft] = useState(DEFAULT_TIMER);
   const timeLeftRef = useRef(DEFAULT_TIMER);
   const [timerRunning, setTimerRunning] = useState(false);
+
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   const [clueInput, setClueInput] = useState("");
   const [clueCountInput, setClueCountInput] = useState("1");
@@ -121,6 +126,44 @@ export default function GameBoard() {
   const redRemaining = game.cards.filter(
     (card) => card.role === "red" && !card.revealed
   ).length;
+
+  function getAudioContext() {
+    if (typeof window === "undefined") return null;
+
+    if (!audioContextRef.current) {
+      const AudioContextClass = window.AudioContext;
+
+      if (!AudioContextClass) return null;
+
+      audioContextRef.current = new AudioContextClass();
+    }
+
+    return audioContextRef.current;
+  }
+
+  const playGameBeep = useCallback(
+    (frequency = 800, duration = 150) => {
+      const context = getAudioContext();
+
+      if (!context) return;
+
+      if (context.state === "suspended") {
+        void context
+          .resume()
+          .then(() => {
+            playBeep(context, frequency, duration);
+          })
+          .catch(() => {
+            // Браузер може блокувати звук.
+          });
+
+        return;
+      }
+
+      playBeep(context, frequency, duration);
+    },
+    []
+  );
 
   function resetTurnControls() {
     setTimerRunning(false);
@@ -138,10 +181,11 @@ export default function GameBoard() {
     timeLeftRef.current = timerDuration;
     setTimeLeft(timerDuration);
     setTimerRunning(true);
-    playBeep(520, 220);
+
+    playGameBeep(520, 220);
   }
 
-  function handleHintSubmit(event: React.FormEvent<HTMLFormElement>) {
+  function handleHintSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const text = clueInput.trim();
@@ -169,7 +213,7 @@ export default function GameBoard() {
   }
 
   function handleCardClick(id: number) {
-    if (game.gameOver || showKey) return;
+    if (game.gameOver || !timerRunning || showKey) return;
 
     const selectedCard = game.cards.find((card) => card.id === id);
 
@@ -231,6 +275,7 @@ export default function GameBoard() {
 
   function startNewGame() {
     setGame(createGame());
+    setKeyLocked(false);
     resetTurnControls();
   }
 
@@ -240,6 +285,16 @@ export default function GameBoard() {
     setTimerDuration(duration);
     timeLeftRef.current = duration;
     setTimeLeft(duration);
+  }
+
+  function toggleKeyLock() {
+    if (keyLocked) {
+      setKeyLocked(false);
+      return;
+    }
+
+    setShowKey(false);
+    setKeyLocked(true);
   }
 
   function getCardClass(card: GameCard) {
@@ -260,9 +315,9 @@ export default function GameBoard() {
       setTimeLeft(nextTime);
 
       if (nextTime === Math.ceil(timerDuration / 2)) {
-        playBeep(680, 250);
+        playGameBeep(680, 250);
       } else if (nextTime > 0 && nextTime <= 5) {
-        playBeep(nextTime === 1 ? 1150 : 900, 130);
+        playGameBeep(nextTime === 1 ? 1150 : 900, 130);
       }
 
       if (nextTime === 0) {
@@ -287,7 +342,16 @@ export default function GameBoard() {
     }, 1000);
 
     return () => window.clearInterval(interval);
-  }, [timerRunning, timerDuration]);
+  }, [timerRunning, timerDuration, playGameBeep]);
+
+  useEffect(() => {
+    return () => {
+      if (audioContextRef.current) {
+        void audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+    };
+  }, []);
 
   return (
     <main className={styles.game}>
@@ -351,7 +415,6 @@ export default function GameBoard() {
               className={`${styles.timer} ${
                 timeLeft <= 5 && timerRunning ? styles.timerUrgent : ""
               }`}
-              aria-live="off"
             >
               {formatTime(timeLeft)}
             </strong>
@@ -389,25 +452,26 @@ export default function GameBoard() {
           </div>
         ) : (
           <form className={styles.hintForm} onSubmit={handleHintSubmit}>
-            <label className={styles.fieldLabel} htmlFor="captain-clue">
-              Підказка капітана
-            </label>
-
             <div className={styles.hintInputs}>
-              <input
-                id="captain-clue"
-                className={styles.clueInput}
-                type="text"
-                placeholder="Введіть підказку..."
-                value={clueInput}
-                onChange={(event) => setClueInput(event.target.value)}
-                maxLength={60}
-                disabled={game.gameOver || timerRunning}
-                required
-              />
+              <label className={styles.clueField} htmlFor="captain-clue">
+                <span className={styles.fieldLabel}>
+                  Підказка капітана
+                </span>
+                <input
+                  id="captain-clue"
+                  className={styles.clueInput}
+                  type="text"
+                  placeholder="Введіть підказку..."
+                  value={clueInput}
+                  onChange={(event) => setClueInput(event.target.value)}
+                  maxLength={60}
+                  disabled={game.gameOver || timerRunning}
+                  required
+                />
+              </label>
 
               <label className={styles.countControl}>
-                <span>Слів</span>
+                <span className={styles.fieldLabel}>Кількість слів</span>
                 <select
                   value={clueCountInput}
                   onChange={(event) => setClueCountInput(event.target.value)}
@@ -425,7 +489,9 @@ export default function GameBoard() {
             <button
               className={styles.startButton}
               type="submit"
-              disabled={game.gameOver || timerRunning || !clueInput.trim()}
+              disabled={
+                game.gameOver || timerRunning || !clueInput.trim()
+              }
             >
               Передати підказку й почати хід
             </button>
@@ -435,10 +501,29 @@ export default function GameBoard() {
         <div className={styles.turnActions}>
           <button
             className={styles.keyButton}
-            onClick={() => setShowKey((visible) => !visible)}
-            disabled={game.gameOver}
+            onClick={() => {
+              if (!keyLocked) {
+                setShowKey((visible) => !visible);
+              }
+            }}
+            disabled={game.gameOver || keyLocked}
           >
-            {showKey ? "Сховати поле капітанів" : "Поле капітанів"}
+            {keyLocked
+              ? "Поле капітанів заблоковано"
+              : showKey
+                ? "Сховати поле капітанів"
+                : "Показати поле капітанів"}
+          </button>
+
+          <button
+            className={`${styles.lockButton} ${
+              keyLocked ? styles.lockButtonActive : ""
+            }`}
+            onClick={toggleKeyLock}
+            disabled={game.gameOver}
+            aria-pressed={keyLocked}
+          >
+            {keyLocked ? "Розблокувати" : "Заблокувати"}
           </button>
 
           <button
@@ -451,11 +536,13 @@ export default function GameBoard() {
         </div>
 
         <p className={styles.hintText}>
-          {showKey
-            ? "Секретне поле відкрите. Сховайте його перед передаванням телефона."
-            : timerRunning
-              ? "Час пішов! Відкривайте слова за підказкою капітана."
-              : "Капітан вводить підказку та кількість слів, щоб почати відлік."}
+          {keyLocked
+            ? "Поле капітанів заблоковане. Розблокуйте його, щоб переглянути секретну карту."
+            : showKey
+              ? "Секретне поле відкрите. Сховайте його перед передаванням телефона."
+              : timerRunning
+                ? "Час пішов! Тепер можна відкривати слова."
+                : "Введіть підказку та кількість слів, щоб почати хід."}
         </p>
       </section>
 
@@ -465,7 +552,12 @@ export default function GameBoard() {
             key={card.id}
             className={`${styles.card} ${getCardClass(card)}`}
             onClick={() => handleCardClick(card.id)}
-            disabled={game.gameOver || card.revealed || showKey}
+            disabled={
+              game.gameOver ||
+              !timerRunning ||
+              card.revealed ||
+              showKey
+            }
             aria-label={
               card.revealed || showKey
                 ? `${card.word}, ${card.role}`
@@ -478,7 +570,8 @@ export default function GameBoard() {
       </section>
 
       <p className={styles.footerHint}>
-        Чужа картка завершує хід. Чорна картка означає поразку команди, яка її відкрила.
+        Чужа картка завершує хід. Чорна картка означає поразку команди,
+        яка її відкрила.
       </p>
     </main>
   );
