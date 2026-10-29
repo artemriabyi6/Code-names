@@ -118,6 +118,7 @@ export default function GameBoard() {
   const [clueInput, setClueInput] = useState("");
   const [clueCountInput, setClueCountInput] = useState("1");
   const [currentHint, setCurrentHint] = useState<CaptainHint | null>(null);
+  const [guessesMade, setGuessesMade] = useState(0);
 
   const blueRemaining = game.cards.filter(
     (card) => card.role === "blue" && !card.revealed
@@ -170,6 +171,7 @@ export default function GameBoard() {
     timeLeftRef.current = timerDuration;
     setTimeLeft(timerDuration);
     setCurrentHint(null);
+    setGuessesMade(0);
     setClueInput("");
     setClueCountInput("1");
     setShowKey(false);
@@ -208,59 +210,92 @@ export default function GameBoard() {
       count,
     });
 
+    setGuessesMade(0);
     setClueInput("");
     startTurnTimer();
   }
 
-  function handleCardClick(id: number) {
-    if (game.gameOver || !timerRunning || showKey) return;
+  
+function handleCardClick(id: number) {
+  if (game.gameOver || !timerRunning || showKey) return;
 
-    const selectedCard = game.cards.find((card) => card.id === id);
+  const selectedCard = game.cards.find((card) => card.id === id);
 
-    if (!selectedCard || selectedCard.revealed) return;
+  if (!selectedCard || selectedCard.revealed) return;
 
-    const updatedCards = game.cards.map((card) =>
-      card.id === id ? { ...card, revealed: true } : card
-    );
+  const updatedCards = game.cards.map((card) =>
+    card.id === id ? { ...card, revealed: true } : card
+  );
 
-    let winner: Team | null = null;
-    let gameOver = false;
-    let currentTeam = game.currentTeam;
+  let winner: Team | null = null;
+  let gameOver = false;
+  let currentTeam = game.currentTeam;
 
-    if (selectedCard.role === "assassin") {
-      winner = getOtherTeam(game.currentTeam);
-      gameOver = true;
-    } else if (
-      selectedCard.role === "blue" &&
-      updatedCards.every(
-        (card) => card.role !== "blue" || card.revealed
-      )
-    ) {
-      winner = "blue";
-      gameOver = true;
-    } else if (
-      selectedCard.role === "red" &&
-      updatedCards.every(
-        (card) => card.role !== "red" || card.revealed
-      )
-    ) {
-      winner = "red";
-      gameOver = true;
-    } else if (selectedCard.role !== game.currentTeam) {
-      currentTeam = getOtherTeam(game.currentTeam);
-    }
+  if (selectedCard.role === "assassin") {
+    winner = getOtherTeam(game.currentTeam);
+    gameOver = true;
+  } else if (
+    selectedCard.role === "blue" &&
+    updatedCards.every(
+      (card) => card.role !== "blue" || card.revealed
+    )
+  ) {
+    winner = "blue";
+    gameOver = true;
+  } else if (
+    selectedCard.role === "red" &&
+    updatedCards.every(
+      (card) => card.role !== "red" || card.revealed
+    )
+  ) {
+    winner = "red";
+    gameOver = true;
+  } else if (selectedCard.role !== game.currentTeam) {
+    currentTeam = getOtherTeam(game.currentTeam);
+  }
 
-    setGame({
-      cards: updatedCards,
-      currentTeam,
-      winner,
-      gameOver,
-    });
+  setGame({
+    cards: updatedCards,
+    currentTeam,
+    winner,
+    gameOver,
+  });
 
-    if (gameOver || currentTeam !== game.currentTeam) {
+  // Перемога або картка вбивці завершують гру.
+  if (gameOver) {
+    resetTurnControls();
+    return;
+  }
+
+  // Неправильна картка одразу передає хід суперникам.
+  if (currentTeam !== game.currentTeam) {
+    resetTurnControls();
+    return;
+  }
+
+  // Витрачаємо спробу за кожну відкриту картку своєї команди.
+  if (
+    selectedCard.role === game.currentTeam &&
+    currentHint &&
+    currentHint.team === game.currentTeam &&
+    currentHint.count > 0
+  ) {
+    const nextGuessesMade = guessesMade + 1;
+
+    setGuessesMade(nextGuessesMade);
+
+    // Усі спроби вичерпано — перемикаємо команду.
+    if (nextGuessesMade >= currentHint.count) {
+      setGame((previousGame) => ({
+        ...previousGame,
+        currentTeam: getOtherTeam(previousGame.currentTeam),
+      }));
+
       resetTurnControls();
     }
   }
+}
+
 
   function handleEndTurn() {
     if (game.gameOver) return;
@@ -335,6 +370,7 @@ export default function GameBoard() {
         timeLeftRef.current = timerDuration;
         setTimeLeft(timerDuration);
         setCurrentHint(null);
+        setGuessesMade(0);
         setClueInput("");
         setClueCountInput("1");
         setShowKey(false);
@@ -541,7 +577,9 @@ export default function GameBoard() {
             : showKey
               ? "Секретне поле відкрите. Сховайте його перед передаванням телефона."
               : timerRunning
-                ? "Час пішов! Тепер можна відкривати слова."
+                ? currentHint && currentHint.count > 0
+                  ? `Час пішов! Відгадано: ${guessesMade} з ${currentHint.count}.`
+                  : "Час пішов! Тепер можна відкривати слова."
                 : "Введіть підказку та кількість слів, щоб почати хід."}
         </p>
       </section>
